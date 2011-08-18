@@ -34,9 +34,7 @@ trait Sleeping extends RequestHandler {
 
   private def sleep() {
     try {
-      val millis = (scala.util.Random.nextDouble * 100).asInstanceOf[Long] + 10
-      System.out.println("sleeping for " + millis)
-      Thread.sleep(millis)
+      Thread.sleep((scala.util.Random.nextDouble * 100).asInstanceOf[Long] + 10)
     }
     catch {
       case e: InterruptedException => {
@@ -52,13 +50,14 @@ trait RandomErrors extends RequestHandler {
   val errorTreshold = errorPercentage * 1000.0f
 
   abstract override def isError: Boolean = {
-
     scala.util.Random.nextInt(100000) < (100000 - errorTreshold)
   }
 }
 
 trait JSONReplier extends RequestHandler {
-  abstract override def setContentType(response: HttpServletResponse) {response.setContentType("application/json;charset=UTF-8")}
+  abstract override def setContentType(response: HttpServletResponse) {
+    response.setContentType("application/json;charset=UTF-8")
+  }
 
   abstract override def handleSuccess(request: HttpServletRequest, response: HttpServletResponse) {
     response.setStatus(HttpServletResponse.SC_OK)
@@ -76,7 +75,9 @@ trait JSONReplier extends RequestHandler {
 
 class RequestHandler extends AbstractHandler {
 
-  def setContentType(response: HttpServletResponse) {response.setContentType("text/html;charset=UTF8")}
+  def setContentType(response: HttpServletResponse) {
+    response.setContentType("text/html;charset=UTF8")
+  }
 
   def isError: Boolean = false;
 
