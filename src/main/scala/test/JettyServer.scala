@@ -3,38 +3,36 @@ package test
 import org.eclipse.jetty.server.Connector
 import org.eclipse.jetty.server.Request
 import org.eclipse.jetty.server.Server
-import org.eclipse.jetty.server.handler.AbstractHandler
 import org.eclipse.jetty.server.nio.SelectChannelConnector
 import javax.servlet.http.HttpServletRequest
 import javax.servlet.http.HttpServletResponse
+import org.eclipse.jetty.server.handler.AbstractHandler
+import java.util.logging.{Level, LogRecord, ConsoleHandler, Logger}
 
-class JettyServer(handler: RequestHandler) {
-  val server = new Server
-  val connector: SelectChannelConnector = new SelectChannelConnector
-  connector.setPort(8080)
-  server.setConnectors(Array[Connector](connector))
-  server.setHandler(handler)
+object DefaultWriters {
+  def defaultContentType(response:HttpServletResponse) {response.setContentType("text/plain; charset=utf-8")}
+  def defaultOkWriter(request:HttpServletRequest, response: HttpServletResponse) {
+    response.setStatus(HttpServletResponse.SC_OK)
+    defaultContentType(response)
+    response.getWriter.println("OK")
+  }
 
-  def start() {
-    server.start()
-    server.join()
+  def defaultErrorWriter(request:HttpServletRequest, response: HttpServletResponse) {
+    response.setStatus(HttpServletResponse.SC_INTERNAL_SERVER_ERROR)
+    defaultContentType(response)
+    response.getWriter.println("ERROR")
   }
 }
 
-trait Sleeping extends RequestHandler {
-  abstract override def handleSuccess(request: HttpServletRequest, response: HttpServletResponse) {
-    sleep()
-    super.handleSuccess(request, response)
-  }
+object DefaultHandlers {
+  val log = Logger.getLogger("handlers");
 
-  abstract override def handleError(request: HttpServletRequest, response: HttpServletResponse) {
-    sleep()
-    super.handleError(request, response)
-  }
-
-  private def sleep() {
+  def sleeper(minWaitInMillis:Int, maxWaitInMillis:Int) = (request: HttpServletRequest, response: HttpServletResponse) => {
+    val waitTimeRange = maxWaitInMillis-minWaitInMillis
+    val sleepMs = (scala.util.Random.nextDouble * waitTimeRange).asInstanceOf[Long] + minWaitInMillis
+    log.finest("sleeping for %d ms".format(sleepMs))
     try {
-      Thread.sleep((scala.util.Random.nextDouble * 100).asInstanceOf[Long] + 10)
+      Thread.sleep(sleepMs)
     }
     catch {
       case e: InterruptedException => {
@@ -43,60 +41,71 @@ trait Sleeping extends RequestHandler {
       }
     }
   }
-}
 
-trait RandomErrors extends RequestHandler {
-  val errorPercentage: Float
-  val errorTreshold = errorPercentage * 1000.0f
-
-  abstract override def isError: Boolean = {
-    scala.util.Random.nextInt(100000) < (100000 - errorTreshold)
+  def randomErrors(errorPercentage: Int) = (request: HttpServletRequest, response: HttpServletResponse) => {
+    val errorTreshold = errorPercentage * 1000
+    val seed: Int = scala.util.Random.nextInt(100000)
+    val error = seed < (100000 - errorTreshold)
+    log.finest("isError=%b, random=%d, treshold=%d".format(error, seed, errorTreshold))
+    if (error) throw new RandomErrorException
   }
 }
 
-trait JSONReplier extends RequestHandler {
-  abstract override def setContentType(response: HttpServletResponse) {
-    response.setContentType("application/json;charset=UTF-8")
+class RandomErrorException extends RuntimeException
+
+class JettyServer(
+                   handlers: List[(HttpServletRequest,HttpServletResponse) => Unit],
+                   okWriter:(HttpServletRequest,HttpServletResponse) => Unit = DefaultWriters.defaultOkWriter,
+                   errorWriter:(HttpServletRequest,HttpServletResponse) => Unit = DefaultWriters.defaultErrorWriter) {
+
+  require (!handlers.isEmpty)
+
+  System.setProperty("org.eclipse.jetty.util.log.class", "org.eclipse.jetty.util.log.JavaUtilLog")
+  setupLogging()
+
+  val server = new Server
+  val connector = new SelectChannelConnector
+  val log = Logger.getLogger("jetty")
+
+  connector.setPort(8080)
+  server.setConnectors(Array[Connector](connector))
+  server.setHandler(new AbstractHandler {
+    def handle(target: String, baseRequest: Request, request: HttpServletRequest, response: HttpServletResponse) {
+      log.fine("handling request, calling handler functions "+handlers)
+      var failed = false
+      handlers foreach (x => {
+        try {
+          x(request, response)
+        } catch {
+          case e:RandomErrorException =>
+            errorWriter(request, response)
+            failed = true
+          case e:RuntimeException =>
+            log.log(Level.SEVERE, "Error", e)
+        }
+      })
+      if(!failed) okWriter(request, response)
+      baseRequest.setHandled(true)
+    }
+  })
+
+  def start() {
+    server.start()
+    server.join()
   }
 
-  abstract override def handleSuccess(request: HttpServletRequest, response: HttpServletResponse) {
-    response.setStatus(HttpServletResponse.SC_OK)
-    val queryString: String = if (request.getQueryString == null) "" else "?" + request.getQueryString
-    val pathInfo: String = request.getPathInfo
-    response.getWriter.println("{ \"status\":200, \"query\":\"" + pathInfo + queryString + "\" }")
+  def setupLogging() {
+    val logger: Logger = Logger.getLogger("")
+    logger.getHandlers.foreach(h => logger.removeHandler(h))
+    logger.addHandler(new ConsoleHandler {
+      override def publish(p1: LogRecord) {
+        println(format("%tT:%-5.5s:%s:%s", p1.getMillis, p1.getLevel, p1.getLoggerName, p1.getMessage))
+        if(p1.getThrown != null) {
+          p1.getThrown.printStackTrace(Console.out)
+        }
+      }
+    })
+    logger.setLevel(Level.ALL)
+    Logger.getLogger("org.eclipse.jetty.util.log").setLevel(Level.INFO)
   }
-
-  abstract override def handleError(request: HttpServletRequest, response: HttpServletResponse) {
-    response.setStatus(HttpServletResponse.SC_INTERNAL_SERVER_ERROR)
-    response.getWriter.println("{ \"status\":500 }")
-  }
-
 }
-
-class RequestHandler extends AbstractHandler {
-
-  def setContentType(response: HttpServletResponse) {
-    response.setContentType("text/html;charset=UTF8")
-  }
-
-  def isError: Boolean = false;
-
-  def handle(target: String, baseRequest: Request, request: HttpServletRequest, response: HttpServletResponse) {
-    setContentType(response)
-    baseRequest.setHandled(true)
-    if (isError)
-      handleError(request, response)
-    else
-      handleSuccess(request, response)
-  }
-
-  def handleSuccess(request: HttpServletRequest, response: HttpServletResponse) {
-    response.setStatus(HttpServletResponse.SC_OK)
-  }
-
-  def handleError(request: HttpServletRequest, response: HttpServletResponse) {
-    response.setStatus(HttpServletResponse.SC_INTERNAL_SERVER_ERROR)
-  }
-}
-
-
